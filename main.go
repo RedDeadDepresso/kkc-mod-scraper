@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"sort"
 	"strings"
 	"time"
 
@@ -161,21 +160,11 @@ func getMod(anchor *goquery.Selection) Mod {
 		}
 	})
 
-	if len(mod) != len(modAttributes) {
-		var missing []string
-		for _, a := range modAttributes {
-			if _, ok := mod[a]; !ok {
-				missing = append(missing, a)
-			}
-		}
-		sort.Strings(missing)
-		fatal(fmt.Sprintf("Failed to parse mod. Missing %v.", missing), "anchor", outerHTML(anchor))
-	}
-
 	href, _ := anchor.Attr("href")
 	mod["Link"] = href
 	if mod["Link"] == "" || mod["Guid"] == "" {
-		fatal("Failed to parse mod: Missing link and/or guid.", "anchor", outerHTML(anchor))
+		slog.Warn("Skipping mod with missing link and/or guid", "name", mod["Name"], "link", mod["Link"])
+		return nil
 	}
 	return mod
 }
@@ -209,6 +198,9 @@ func main() {
 	}
 
 	for page := 1; ; page++ {
+		if (page-1)%10 == 0 {
+			slog.Info(fmt.Sprintf("Processing pages %d-%d", page, page+9))
+		}
 		doc := fetchPage(page)
 		anchors := doc.Find("a.mod-library-item-link")
 
@@ -221,6 +213,9 @@ func main() {
 		reached := false
 		anchors.EachWithBreak(func(_ int, a *goquery.Selection) bool {
 			mod := getMod(a)
+			if mod == nil {
+				return true // skipped; keep going
+			}
 			if endMod != nil && reflect.DeepEqual(mod, endMod) {
 				slog.Info("Previous start mod reached")
 				reached = true
