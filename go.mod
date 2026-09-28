@@ -1,4 +1,4 @@
-module kk-mod-scraper
+module kkc-mod-scraper
 
 go 1.26.0
 
