@@ -1,0 +1,52 @@
+name: Deploy mod index to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - kkc_mod_index.json
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate {"guid":"link"} index
+        run: |
+          mkdir -p _site
+          # Source list is newest-first; reverse so the newest entry wins on duplicate GUIDs.
+          # -c = compact output (no indentation).
+          jq -c 'reverse | map({(.Guid): .Link}) | add // {}' kkc_mod_index.json > _site/kkc_mod_index.json
+          echo "Generated $(jq 'length' _site/kkc_mod_index.json) entries"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

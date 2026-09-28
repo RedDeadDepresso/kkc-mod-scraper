@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"golang.org/x/net/html"
@@ -18,9 +19,11 @@ import (
 
 type Mod map[string]string
 
-const indexFile = "mod_index.json"
+const indexFile = "kkc_mod_index.json"
 
 var modAttributes = []string{"Name", "Version", "Author", "Guid", "File"}
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func isModAttribute(s string) bool {
 	for _, a := range modAttributes {
@@ -35,6 +38,42 @@ func fatal(msg string, args ...any) {
 	slog.Error(msg, args...)
 	os.Exit(1)
 }
+
+// ---------- git ----------
+
+func git(args ...string) (string, error) {
+	out, err := exec.Command("git", args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func commitChanges(message string) {
+	if out, err := git("add", "."); err != nil {
+		fatal("git add failed", "err", err, "output", out)
+	}
+
+	// `git commit` exits non-zero when there's nothing to commit,
+	// so check first to avoid treating that as a failure.
+	status, err := git("status", "--porcelain")
+	if err != nil {
+		fatal("git status failed", "err", err, "output", status)
+	}
+	if status == "" {
+		slog.Info("Nothing to commit")
+		return
+	}
+
+	if out, err := git("commit", "-m", message); err != nil {
+		fatal("git commit failed", "err", err, "output", out)
+	}
+	slog.Info("Changes committed")
+
+	if out, err := git("push"); err != nil {
+		fatal("git push failed", "err", err, "output", out)
+	}
+	slog.Info("Changes pushed")
+}
+
+// ---------- persistence ----------
 
 func loadPreviousMods() []Mod {
 	data, err := os.ReadFile(indexFile)
@@ -58,7 +97,7 @@ func saveMods(newMods, prevMods []Mod) {
 
 	var sb strings.Builder
 	enc := json.NewEncoder(&sb)
-	enc.SetEscapeHTML(false) // equivalent of ensure_ascii=False for <, >, &
+	enc.SetEscapeHTML(false) // keep <, >, & unescaped
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(mods); err != nil {
 		fatal("Failed to save mods", "err", err)
@@ -68,7 +107,11 @@ func saveMods(newMods, prevMods []Mod) {
 		fatal("Failed to save mods", "err", err)
 	}
 	slog.Info("Mods saved successfully")
+
+	commitChanges(fmt.Sprintf("Update mod index (%d new mods)", len(newMods)))
 }
+
+// ---------- parsing ----------
 
 func outerHTML(s *goquery.Selection) string {
 	h, err := goquery.OuterHtml(s)
@@ -137,24 +180,24 @@ func getMod(anchor *goquery.Selection) Mod {
 	return mod
 }
 
+// ---------- fetching ----------
+
 func fetchPage(page int) *goquery.Document {
 	url := fmt.Sprintf("https://koikatsucards.com/mod_library?page=%d", page)
-	res, err := http.Get(url)
+	res, err := httpClient.Get(url)
 	if err != nil {
 		fatal("Request failed", "url", url, "err", err)
 	}
 	defer res.Body.Close()
 
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		fatal("Failed to read response", "url", url, "err", err)
-	}
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(body)))
+	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
 		fatal("Failed to parse HTML", "url", url, "err", err)
 	}
 	return doc
 }
+
+// ---------- main ----------
 
 func main() {
 	newMods := []Mod{}
