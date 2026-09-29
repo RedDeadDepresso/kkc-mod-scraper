@@ -6,6 +6,10 @@ on:
     paths:
       - kkc_mod_index.json
       - .github/workflows/pages.yml
+  workflow_run:
+    workflows: ["Scrape mod index"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,9 +24,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the default branch by default; pin explicitly
+          # so we always deploy the branch the scrape workflow just updated.
+          ref: main
 
       - name: Generate {"guid":"link"} index
         run: |
