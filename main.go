@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"reflect"
@@ -18,7 +19,11 @@ import (
 
 type Mod map[string]string
 
-const indexFile = "kkc_mod_index.json"
+const (
+	indexFile      = "kkc_mod_index.json"
+	baseURL        = "https://koikatsucards.com"
+	telegramPrefix = "https://t.me/KK_archive_modlibrary/"
+)
 
 var modAttributes = []string{"Name", "Version", "Author", "Guid", "File"}
 
@@ -161,29 +166,75 @@ func getMod(anchor *goquery.Selection) Mod {
 	})
 
 	href, _ := anchor.Attr("href")
-	mod["Link"] = href
-	if mod["Link"] == "" || mod["Guid"] == "" {
-		slog.Warn("Skipping mod with missing link and/or guid", "name", mod["Name"], "link", mod["Link"])
+	if href == "" || mod["Guid"] == "" {
+		slog.Warn("Skipping mod with missing link and/or guid", "name", mod["Name"], "link", href)
 		return nil
 	}
+
+	// The listing now links to a page on the site; the Telegram link
+	// lives on that page.
+	mod["Link"] = fetchTelegramLink(href)
 	return mod
 }
 
 // ---------- fetching ----------
 
 func fetchPage(page int) *goquery.Document {
-	url := fmt.Sprintf("https://koikatsucards.com/mod_library?page=%d", page)
-	res, err := httpClient.Get(url)
+	pageURL := fmt.Sprintf("%s/mod_library?page=%d", baseURL, page)
+	res, err := httpClient.Get(pageURL)
 	if err != nil {
-		fatal("Request failed", "url", url, "err", err)
+		fatal("Request failed", "url", pageURL, "err", err)
 	}
 	defer res.Body.Close()
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
-		fatal("Failed to parse HTML", "url", url, "err", err)
+		fatal("Failed to parse HTML", "url", pageURL, "err", err)
 	}
 	return doc
+}
+
+// fetchTelegramLink joins the relative href (e.g. "/mod_library/6177-slug") to
+// the base URL, requests that page and returns the href of the first
+// a.link-pill pointing at the Telegram archive. Exits if none is found.
+func fetchTelegramLink(href string) string {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		fatal("Invalid base URL", "url", baseURL, "err", err)
+	}
+	ref, err := url.Parse(href)
+	if err != nil {
+		fatal("Invalid mod href", "href", href, "err", err)
+	}
+	pageURL := base.ResolveReference(ref).String()
+
+	res, err := httpClient.Get(pageURL)
+	if err != nil {
+		fatal("Request failed", "url", pageURL, "err", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		fatal("Unexpected status code", "url", pageURL, "status", res.StatusCode)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		fatal("Failed to parse HTML", "url", pageURL, "err", err)
+	}
+
+	link := ""
+	doc.Find("a.link-pill").EachWithBreak(func(_ int, a *goquery.Selection) bool {
+		if h, ok := a.Attr("href"); ok && strings.HasPrefix(h, telegramPrefix) {
+			link = h
+			return false
+		}
+		return true
+	})
+	if link == "" {
+		fatal("Telegram link not found on mod page", "url", pageURL)
+	}
+	return link
 }
 
 // ---------- main ----------
